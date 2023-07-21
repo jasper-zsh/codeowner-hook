@@ -7,7 +7,7 @@ pipeline {
 
     environment {
         NAMESPACE = "${JOB_NAME}"
-        IMAGE = "${DOCKER_REGISTRY}/${JOB_NAME}/${JOB_NAME}:${GIT_COMMIT}"
+        IMAGE = "${DOCKER_REGISTRY}/${JOB_NAME}:${GIT_COMMIT}"
     }
 
     stages {
