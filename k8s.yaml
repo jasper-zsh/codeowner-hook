@@ -1,0 +1,79 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: codeowner-hook
+data:
+  config.json: |
+    {
+      "github_token": "#{GITHUB_TOKEN}",
+      "qyweixin_bot": "#{QYWEIXIN_BOT}"
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: codeowner-hook-deployment
+  labels:
+    app: codeowner-hook
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: codeowner-hook
+  template:
+    metadata:
+      labels:
+        app: codeowner-hook
+    spec:
+      nodeSelector:
+        region: home
+      containers:
+      - name: codeowner-hook
+        image: #{IMAGE}
+        ports:
+        - containerPort: 4567
+          name: http
+        volumeMounts:
+        - name: config
+          mountPath: /app/conf
+      volumes:
+      - name: config
+        configMap:
+          name: codeowner-hook
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: codeowner-hook
+spec:
+  selector:
+    app: codeowner-hook
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: http
+    name: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: codeowner-hook
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+spec:
+  ingressClassName: traefik
+  tls:
+  - hosts:
+    - #{DOMAIN}
+    secretName: codeowner-hook-tls
+  rules:
+  - host: #{DOMAIN}
+    http:
+      paths:
+      - path: /
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: codeowner-hook
+            port:
+              name: http

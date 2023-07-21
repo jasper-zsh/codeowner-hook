@@ -1,0 +1,71 @@
+pipeline {
+    agent any
+
+    environment {
+        NAMESPACE = "${JOB_NAME}"
+        IMAGE = "${DOCKER_REGISTRY}/${JOB_NAME}/${JOB_NAME}:${GIT_COMMIT}"
+    }
+
+    stages {
+        agent {
+            kubernetes {
+                inheritFrom "kaniko"
+            }
+        }
+        stage("Build and push image") {
+            container("kaniko") {
+                sh """
+                    /kaniko/executor --cache=true \
+                        --context . \
+                        --dockerfile Dockerfile \
+                        --destination ${IMAGE} \
+                """
+            }
+        }
+        stage("Deploy") {
+            container("kubectl") {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'github-jenkins',
+                        usernameVariable: 'GITHUB_USER',
+                        passwordVariable: 'GITHUB_TOKEN',
+                    ),
+                    string(
+                        credentialsId: 'codeowner-hook-qyweixin-bot',
+                        variable: 'QYWEIXIN_BOT'
+                    )
+                ]) {
+                    contentReplace(
+                        configs: [
+                            fileContentReplaceConfig(
+                                configs: [
+                                    fileContentReplaceItemConfig(
+                                        search: '(\\#\\{IMAGE\\})',
+                                        replace: "${IMAGE}",
+                                    ),
+                                    fileContentReplaceItemConfig(
+                                        search: '(\\#\\{DOMAIN\\})',
+                                        replace: "${DOMAIN}",
+                                    ),
+                                    fileContentReplaceItemConfig(
+                                        search: '(\\#\\{GITHUB_TOKEN\\})',
+                                        replace: "${GITHUB_TOKEN}",
+                                    ),
+                                    fileContentReplaceItemConfig(
+                                        search: '(\\#\\{QYWEIXIN_BOT\\})',
+                                        replace: "${QYWEIXIN_BOT}",
+                                    ),
+                                ],
+                                fileEncoding: 'UTF-8',
+                                filePath: 'k8s.yaml',
+                            )
+                        ]
+                    )
+                    withKubeConfig(namespace: "default") {
+                        sh "kubectl apply -f k8s.yaml"
+                    }
+                }
+            }
+        }
+    }
+}
