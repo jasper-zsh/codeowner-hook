@@ -6,8 +6,8 @@ pipeline {
     }
 
     environment {
-        NAMESPACE = "${JOB_NAME}"
-        IMAGE = "${DOCKER_REGISTRY}/${JOB_NAME}:${GIT_COMMIT}"
+        NAMESPACE = "codeowner-hook"
+        IMAGE = "${DOCKER_REGISTRY}/codeowner-hook/server:${GIT_BRANCH}-${GIT_COMMIT}"
     }
 
     stages {
@@ -63,7 +63,7 @@ pipeline {
                                 )
                             ]
                         )
-                        withKubeConfig(namespace: "default") {
+                        withKubeConfig(namespace: "${NAMESPACE}") {
                             sh "kubectl apply -f k8s.yaml"
                         }
                         
