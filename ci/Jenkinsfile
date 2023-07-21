@@ -6,7 +6,7 @@ pipeline {
     }
 
     environment {
-        NAMESPACE = "codeowner-hook"
+        NAMESPACE = "default"
         IMAGE = "${DOCKER_REGISTRY}/codeowner-hook/server:${GIT_BRANCH}-${GIT_COMMIT}"
         DOMAIN = "${CODEOWNER_HOOK_DOMAIN}"
     }
