@@ -15,6 +15,66 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+type CodeOwnerRule struct {
+	Rule   string
+	Owners utils.Set[string]
+
+	patternLevels []string
+}
+
+func NewCodeOwnerRuleFromLine(line string) *CodeOwnerRule {
+	line = strings.Trim(line, " ")
+	if strings.HasPrefix(line, "#") {
+		return nil
+	}
+	parts := strings.Split(line, " ")
+	if len(parts) < 2 {
+		return nil
+	}
+	rule := &CodeOwnerRule{
+		Rule: line,
+	}
+
+	pattern := parts[0]
+	rule.Owners = utils.Set[string]{}
+	rule.Owners.Add(parts[1:]...)
+	rule.patternLevels = strings.Split(pattern, "/")
+	if rule.patternLevels[0] == "" {
+		rule.patternLevels = rule.patternLevels[1:]
+	}
+	return rule
+}
+
+func (r *CodeOwnerRule) Match(file string) bool {
+	fileLevels := strings.Split(file, "/")
+	if len(fileLevels) < len(r.patternLevels) {
+		return false
+	}
+	filePos, patternPos := 0, 0
+	for filePos < len(fileLevels) && patternPos < len(r.patternLevels) {
+		if r.patternLevels[patternPos] == "**" {
+			patternPos++
+			if patternPos == len(r.patternLevels) {
+				break
+			}
+			for ; filePos < len(fileLevels) && fileLevels[filePos] != r.patternLevels[patternPos]; filePos++ {
+			}
+			if filePos == len(fileLevels) {
+				break
+			}
+		} else if r.patternLevels[patternPos] != "*" && r.patternLevels[patternPos] != fileLevels[filePos] {
+			return false
+		}
+		filePos++
+		patternPos++
+	}
+	if patternPos == len(r.patternLevels) {
+		return true
+	} else {
+		return false
+	}
+}
+
 func CheckCodeOwner(event github.GithubPushEvent) {
 	rawCodeOwners, err := getCodeOwnersFile(event.Repository.Owner.Name, event.Repository.Name)
 	if err != nil {
@@ -22,9 +82,15 @@ func CheckCodeOwner(event github.GithubPushEvent) {
 		return
 	}
 
-	changes := utils.Set[string]{}
-	matchedChanges := make(map[string]utils.Set[string])
+	authorChanges := make(map[string]utils.Set[string])
+	matchedChangeAuthorsMap := make(map[string]utils.Set[string])
+	affectedOwnerSet := utils.Set[string]{}
 	for _, commit := range event.Commits {
+		changes, ok := authorChanges[commit.Author.Email]
+		if !ok {
+			changes = utils.Set[string]{}
+			authorChanges[commit.Author.Email] = changes
+		}
 		changes.Add(commit.Added...)
 		changes.Add(commit.Modified...)
 		changes.Add(commit.Removed...)
@@ -32,61 +98,42 @@ func CheckCodeOwner(event github.GithubPushEvent) {
 
 	rows := strings.Split(rawCodeOwners, "\n")
 	for _, row := range rows {
-		row = strings.Trim(row, " ")
-		if strings.HasPrefix(row, "#") {
+		rule := NewCodeOwnerRuleFromLine(row)
+		if rule == nil {
 			continue
 		}
-		parts := strings.Split(row, " ")
-		if len(parts) < 2 {
-			continue
-		}
-		pattern := parts[0]
-		owners := utils.Set[string]{}
-		owners.Add(parts[1:]...)
-		patternLevels := strings.Split(pattern, "/")
-		if patternLevels[0] == "" {
-			patternLevels = patternLevels[1:]
-		}
-		logrus.Infof("pathLevels %+v", patternLevels)
 
-		for change := range changes {
-			if matchPatternLevels(change, patternLevels) {
-				for owner := range owners {
-					m, ok := matchedChanges[owner]
+		for author, changes := range authorChanges {
+			for change := range changes {
+				if rule.Match(change) && !rule.Owners.Contains(author) {
+					matchedChanges, ok := matchedChangeAuthorsMap[change]
 					if !ok {
-						m = utils.Set[string]{}
-						matchedChanges[owner] = m
+						matchedChanges = utils.Set[string]{}
+						matchedChangeAuthorsMap[change] = matchedChanges
 					}
-					m.Add(change)
+					matchedChanges.Add(author)
+					affectedOwnerSet.Add(rule.Owners.ToArray()...)
 				}
 			}
 		}
 	}
-	logrus.Infof("matchedChanges %+v", matchedChanges)
-	owners := make([]string, 0, len(matchedChanges))
-	matchedChangesSet := utils.Set[string]{}
-	for owner, matched := range matchedChanges {
-		owners = append(owners, owner)
-		for change := range matched {
-			matchedChangesSet.Add(change)
-		}
-	}
-	if len(owners) > 0 && len(matchedChangesSet) > 0 {
-		err = sendQyWxBot(event.Repository.FullName, event.Ref, owners, matchedChangesSet.ToArray())
+	logrus.Infof("matchedChanges %+v", matchedChangeAuthorsMap)
+	if len(affectedOwnerSet) > 0 && len(matchedChangeAuthorsMap) > 0 {
+		err = sendQyWxBot(event.Repository.FullName, event.Ref, affectedOwnerSet.ToArray(), matchedChangeAuthorsMap)
 		if err != nil {
 			logrus.Errorf("Failed to send qyweixin message %+v", err)
 		}
 	}
 }
 
-func sendQyWxBot(repo, branch string, owners, changes []string) error {
+func sendQyWxBot(repo, branch string, owners []string, changes map[string]utils.Set[string]) error {
 	ownersTxt := make([]string, 0, len(owners))
 	for _, owner := range owners {
 		ownersTxt = append(ownersTxt, fmt.Sprintf("> Owner: %s", owner))
 	}
 	changesTxt := make([]string, 0, len(changes))
-	for _, change := range changes {
-		changesTxt = append(changesTxt, fmt.Sprintf("变更: %s", change))
+	for change, authors := range changes {
+		changesTxt = append(changesTxt, fmt.Sprintf("%s 修改者: %s", change, strings.Join(authors.ToArray(), ", ")))
 	}
 	payload := map[string]any{
 		"msgtype": "markdown",
@@ -120,36 +167,6 @@ func sendQyWxBot(repo, branch string, owners, changes []string) error {
 	return nil
 }
 
-func matchPatternLevels(file string, patternLevels []string) bool {
-	fileLevels := strings.Split(file, "/")
-	if len(fileLevels) < len(patternLevels) {
-		return false
-	}
-	filePos, patternPos := 0, 0
-	for filePos < len(fileLevels) && patternPos < len(patternLevels) {
-		if patternLevels[patternPos] == "**" {
-			patternPos++
-			if patternPos == len(patternLevels) {
-				break
-			}
-			for ; filePos < len(fileLevels) && fileLevels[filePos] != patternLevels[patternPos]; filePos++ {
-			}
-			if filePos == len(fileLevels) {
-				break
-			}
-		} else if patternLevels[patternPos] != "*" && patternLevels[patternPos] != fileLevels[filePos] {
-			return false
-		}
-		filePos++
-		patternPos++
-	}
-	if patternPos == len(patternLevels) {
-		return true
-	} else {
-		return false
-	}
-}
-
 func getCodeOwnersFile(owner string, repo string) (content string, err error) {
 	paths := []string{"docs/CODEOWNERS", ".github/CODEOWNERS"}
 	for _, p := range paths {
@@ -163,6 +180,9 @@ func getCodeOwnersFile(owner string, repo string) (content string, err error) {
 		}
 		if fileContent != nil {
 			content, err = fileContent.GetContent()
+			if err != nil {
+				return "", err
+			}
 		}
 	}
 	return
