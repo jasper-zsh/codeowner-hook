@@ -71,9 +71,11 @@ func CheckCodeOwner(event github.GithubPushEvent) {
 			matchedChangesSet.Add(change)
 		}
 	}
-	err = sendQyWxBot(event.Repository.FullName, event.Ref, owners, matchedChangesSet.ToArray())
-	if err != nil {
-		logrus.Errorf("Failed to send qyweixin message %+v", err)
+	if len(owners) > 0 && len(matchedChangesSet) > 0 {
+		err = sendQyWxBot(event.Repository.FullName, event.Ref, owners, matchedChangesSet.ToArray())
+		if err != nil {
+			logrus.Errorf("Failed to send qyweixin message %+v", err)
+		}
 	}
 }
 
